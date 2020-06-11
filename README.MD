@@ -15,7 +15,7 @@ go build
 
 提供 win64 平台的可执行文件
 
-https://github.com/okuc/schedule_task/releases/
+https://github.com/okuc/schedule_task/tree/master/release
 
 #### 配置文件
 `setting.conf`为本工具的配置文件，说明如下：
