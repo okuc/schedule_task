@@ -10,6 +10,7 @@ import (
 	"github.com/unknwon/goconfig"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -21,30 +22,32 @@ import (
 //go mod init
 var cfg *goconfig.ConfigFile
 
+var (
+	interval string
+)
+
+//启动时init中即需要用，所以设置成全局变量
 func main() {
 
 	log.Info("读取配置文件")
 	//读取配置文件
-	cmds, _ := cfg.GetValue("java", "cmds") //读取单个值
-	fmt.Println(cmds)
-	cmds2, _ := cfg.GetValue("java", "cmds2") //读取单个值
-	fmt.Println(cmds2)
-	jarpath, _ := cfg.GetValue("java", "jarpath") //读取单个值
-	fmt.Println(jarpath)
+	cmds, _ := cfg.GetValue("java", "cmds")               //读取单个值
+	cmds2, _ := cfg.GetValue("java", "cmds2")             //读取单个值
+	showapplog, _ := cfg.GetValue("java", "showapplog")   //读取单个值
+	jarpath, _ := cfg.GetValue("java", "jarpath")         //读取单个值
 	starttime, _ := cfg.GetValue("schedule", "starttime") //读取单个值
-	fmt.Println(starttime)
-	endtime, _ := cfg.GetValue("schedule", "endtime") //读取单个值
-	fmt.Println(endtime)
-	startnow, _ := cfg.GetValue("java", "startnow") //读取单个值
-	fmt.Println(startnow)
+	endtime, _ := cfg.GetValue("schedule", "endtime")     //读取单个值
+	startnow, _ := cfg.GetValue("java", "startnow")       //读取单个值
 
 	log.WithFields(log.Fields{
-		"cmds":      cmds,
-		"cmds2":     cmds2,
-		"jarpath":   jarpath,
-		"starttime": starttime,
-		"endtime":   endtime,
-		"startnow":  startnow,
+		"cmds":       cmds,
+		"cmds2":      cmds2,
+		"jarpath":    jarpath,
+		"starttime":  starttime,
+		"endtime":    endtime,
+		"startnow":   startnow,
+		"showapplog": showapplog,
+		"interval":   interval,
 	}).Info("系统使用上述参数启动了")
 
 	//是否需要立即启动
@@ -58,7 +61,7 @@ func main() {
 		isExists, _, _ := isJarProcessExist(jarpath)
 		log.Info("java程序是否已存在：" + strconv.FormatBool(isExists))
 		if !isExists {
-			go exeCmds(cmds, cmds2, jarpath)
+			go exeCmds(cmds, cmds2, jarpath, showapplog)
 		}
 	}
 
@@ -81,7 +84,7 @@ func main() {
 		isExists, _, _ := isJarProcessExist(jarpath)
 		log.Info("java程序是否已存在：" + strconv.FormatBool(isExists))
 		if !isExists {
-			go exeCmds(cmds, cmds2, jarpath)
+			go exeCmds(cmds, cmds2, jarpath, showapplog)
 		}
 	})
 	c.AddFunc(endtime, func() {
@@ -113,6 +116,7 @@ func main() {
 
 //初始化，自动调用
 func init() {
+
 	config, err := goconfig.LoadConfigFile("setting.conf") //加载配置文件
 
 	//获取当前运行路径
@@ -137,7 +141,9 @@ func init() {
 	//设置最低loglevel
 	log.SetLevel(log.InfoLevel)
 	//日志分割hook
-	log.AddHook(newLfsHook(100, "schedule_task.log"))
+	interval, _ = cfg.GetValue("log", "interval") //读取单个值
+	intervals, _ := strconv.Atoi(interval)
+	log.AddHook(newLfsHook(100, "schedule_task.log", intervals))
 }
 
 /**
@@ -208,7 +214,9 @@ func exeCmds(text ...string) {
 		log.Printf("Command finished with error: ", err)
 	}
 	utf8, _ := GbkToUtf8(out.Bytes())
-	log.Info(string(utf8))
+	if "yes" == strings.TrimSpace(text[3]) { //根据配置，选择是否记录运行程序后输出的日志
+		log.Info(string(utf8))
+	}
 }
 
 //解决控制台中文乱码问题
@@ -222,14 +230,15 @@ func GbkToUtf8(s []byte) ([]byte, error) {
 }
 
 //日志分割函数
-func newLfsHook(maxRemainCnt uint, logName string) log.Hook {
+func newLfsHook(maxRemainCnt uint, logName string, interval int) log.Hook {
 	writer, err := rotatelogs.New(
 		logName+".%Y%m%d%H",
 		// WithLinkName为最新的日志建立软连接，以方便随着找到当前日志文件
 		rotatelogs.WithLinkName(logName),
 
-		// WithRotationTime设置日志分割的时间，这里设置为一小时分割一次
-		rotatelogs.WithRotationTime(time.Hour),
+		// WithRotationTime设置日志分割的时间，
+
+		rotatelogs.WithRotationTime(time.Hour*time.Duration(interval)),
 
 		// WithMaxAge和WithRotationCount二者只能设置一个，
 		// WithMaxAge设置文件清理前的最长保存时间，
@@ -242,13 +251,19 @@ func newLfsHook(maxRemainCnt uint, logName string) log.Hook {
 		log.Errorf("config local file system for logger error: %v", err)
 	}
 
+	// 定义多个写入器
+	writers := []io.Writer{
+		writer,
+		os.Stdout}
+	fileAndStdoutWriter := io.MultiWriter(writers...)
+
 	lfsHook := lfshook.NewHook(lfshook.WriterMap{
-		log.DebugLevel: writer,
-		log.InfoLevel:  writer,
-		log.WarnLevel:  writer,
-		log.ErrorLevel: writer,
-		log.FatalLevel: writer,
-		log.PanicLevel: writer,
+		log.DebugLevel: fileAndStdoutWriter,
+		log.InfoLevel:  fileAndStdoutWriter,
+		log.WarnLevel:  fileAndStdoutWriter,
+		log.ErrorLevel: fileAndStdoutWriter,
+		log.FatalLevel: fileAndStdoutWriter,
+		log.PanicLevel: fileAndStdoutWriter,
 	}, &log.TextFormatter{DisableColors: true})
 
 	return lfsHook
